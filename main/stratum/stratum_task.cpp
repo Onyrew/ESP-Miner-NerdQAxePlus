@@ -20,7 +20,6 @@
 #include "psram_allocator.h"
 #include "stratum_task.h"
 #include "system.h"
-#include "guards.h"
 
 #define ESP_LOGIE(b, tag, fmt, ...)                                                                                                \
     do {                                                                                                                           \
@@ -291,8 +290,6 @@ void StratumTaskV1::protocolLoop()
     // but we make sure to clear the jobs on the first job
     m_firstJob = true;
 
-    char *line = nullptr;
-
     while (1) {
         if (!m_transport->isConnected()) {
             if (Config::isStratumKeepaliveEnabled()) {
@@ -302,10 +299,7 @@ void StratumTaskV1::protocolLoop()
             }
             break;
         }
-        line = m_stratumAPI.receiveJsonRpcLine(m_transport);
-
-        // release memory when out of scope
-        MemoryGuard g(line);
+        char *line = m_stratumAPI.receiveJsonRpcLine(m_transport);
 
         if (!line && !m_reconnect) {
             ESP_LOGE(m_tag, "Failed to receive JSON-RPC line, reconnecting ...");
@@ -317,7 +311,7 @@ void StratumTaskV1::protocolLoop()
             return;
         }
 
-        ESP_LOGI(m_tag, "rx: %s", line); // debug incoming stratum messages
+        ESP_LOGD(m_tag, "rx: %s", line);
 
         PSRAMAllocator allocator;
         JsonDocument doc(&allocator);

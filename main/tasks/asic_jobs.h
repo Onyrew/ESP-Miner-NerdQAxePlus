@@ -1,9 +1,10 @@
 #pragma once
 
+#include <memory>
+#include <new>
 #include <pthread.h>
+#include <stdlib.h>
 #include <string.h>
-
-#include "esp_heap_caps.h"
 
 #include "macros.h"
 #include "mining.h"
@@ -11,33 +12,16 @@
 #define MAX_ASIC_JOBS 128
 
 class AsicJobs {
-protected:
+    struct SnapshotDeleter {
+        void operator()(bm_job *job) const { free(job); }
+    };
+
     bm_job *m_activeJobs[MAX_ASIC_JOBS];
     pthread_mutex_t m_validJobsLock;
 
-    void lock() {
-        pthread_mutex_lock(&m_validJobsLock);
-    }
-
-    void unlock() {
-        pthread_mutex_unlock(&m_validJobsLock);
-    }
-
-    bm_job *cloneBmJob(bm_job *src)
-    {
-        bm_job *dst = (bm_job *) MALLOC(sizeof(bm_job));
-
-        // copy all
-        memcpy(dst, src, sizeof(bm_job));
-
-        // copy strings
-        dst->extranonce2 = strdup(src->extranonce2);
-        dst->jobid = strdup(src->jobid);
-
-        return dst;
-    }
-
 public:
+    using JobSnapshot = std::unique_ptr<bm_job, SnapshotDeleter>;
+
     AsicJobs() {
         m_validJobsLock = PTHREAD_MUTEX_INITIALIZER;
         memset(m_activeJobs, 0, sizeof(m_activeJobs));
@@ -66,17 +50,30 @@ public:
         m_activeJobs[asic_job_id] = next_job;
     }
 
-    bm_job *getClone(uint8_t asic_job_id) {
-        PThreadGuard g(m_validJobsLock);
-        // check if we have a job with this job id
-        if (!m_activeJobs[asic_job_id]) {
-            return NULL;
+    JobSnapshot getSnapshot(uint8_t asic_job_id) {
+        if (asic_job_id >= MAX_ASIC_JOBS) {
+            return {};
         }
-        // create a clone
-        bm_job *job = cloneBmJob(m_activeJobs[asic_job_id]);
 
-        // and return it
-        return job;
+        PThreadGuard g(m_validJobsLock);
+        const bm_job *job = m_activeJobs[asic_job_id];
+        if (!job || !job->jobid || !job->extranonce2) {
+            return {};
+        }
+
+        // Store both strings after the job so the snapshot needs one allocation.
+        const size_t jobIdSize = strlen(job->jobid) + 1;
+        const size_t extranonceSize = strlen(job->extranonce2) + 1;
+        auto *storage = static_cast<char *>(MALLOC(sizeof(bm_job) + jobIdSize + extranonceSize));
+        if (!storage) {
+            return {};
+        }
+        auto *snapshot = new (storage) bm_job(*job);
+        snapshot->jobid = storage + sizeof(bm_job);
+        snapshot->extranonce2 = snapshot->jobid + jobIdSize;
+        memcpy(snapshot->jobid, job->jobid, jobIdSize);
+        memcpy(snapshot->extranonce2, job->extranonce2, extranonceSize);
+        return JobSnapshot(snapshot);
     }
 
 };

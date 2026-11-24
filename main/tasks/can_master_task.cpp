@@ -286,7 +286,7 @@ static void handle_nonce(Board *board, uint8_t slave_id, const uint8_t *buf, siz
 
     ESP_LOGI(TAG, "slave %d nonce=%08lX job_id=%02X", slave_id, nonce, job_id);
 
-    bm_job *job = slaveAsicJobs[slave_id].getClone(job_id);
+    const auto job = slaveAsicJobs[slave_id].getSnapshot(job_id);
     if (!job) {
         ESP_LOGW(TAG, "slave %d unknown job_id 0x%02X", slave_id, job_id);
         return;
@@ -294,7 +294,7 @@ static void handle_nonce(Board *board, uint8_t slave_id, const uint8_t *buf, siz
 
     rolled_version |= job->version;
 
-    double nonce_diff = test_nonce_value(job, nonce, rolled_version);
+    double nonce_diff = test_nonce_value(job.get(), nonce, rolled_version);
 
     const char *pool_str = job->pool_id ? "Sec" : "Pri";
 
@@ -312,8 +312,6 @@ static void handle_nonce(Board *board, uint8_t slave_id, const uint8_t *buf, siz
 
     STRATUM_MANAGER->checkForBestDiff(job->pool_id, nonce_diff, job->target);
     STRATUM_MANAGER->checkForFoundBlock(job->pool_id, nonce_diff, job->target);
-
-    free_bm_job(job);
 }
 
 static void handle_config(uint8_t slave_id, const uint8_t *buf, size_t len)

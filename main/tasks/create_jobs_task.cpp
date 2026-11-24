@@ -7,6 +7,7 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "mining.h"
+#include "mining_utils.h"
 
 #include "global_state.h"
 #include "create_jobs_task.h"
@@ -22,8 +23,9 @@
 
 static const char *TAG = "create_jobs_task";
 
-pthread_mutex_t job_mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_cond_t job_cond = PTHREAD_COND_INITIALIZER;
+static pthread_mutex_t job_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t job_cond = PTHREAD_COND_INITIALIZER;
+static bool pool_job_pending = false;
 
 pthread_mutex_t current_stratum_job_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -38,6 +40,58 @@ MiningInfoBase::~MiningInfoBase() {}
 // ============================================================================
 
 class MiningInfoV1 : public MiningInfoBase {
+  private:
+    uint8_t *m_coinbase = nullptr;
+    size_t m_coinbaseLen = 0;
+    size_t m_extranonce2HexOffset = 0;
+
+    bool prepareCoinbase()
+    {
+        const size_t prefixLen = strlen(current_job->coinbase_1);
+        const size_t extranonce1Len = strlen(extranonce_str);
+        const size_t extranonce2Len = extranonce_2_len * 2;
+        const size_t suffixLen = strlen(current_job->coinbase_2);
+        const size_t extranonce2Offset = prefixLen + extranonce1Len;
+        const size_t hexLen = extranonce2Offset + extranonce2Len + suffixLen;
+        auto *hex = static_cast<char *>(MALLOC(hexLen + 1));
+        if (!hex) {
+            ESP_LOGE(TAG, "no memory for coinbase tx");
+            return false;
+        }
+
+        memcpy(hex, current_job->coinbase_1, prefixLen);
+        memcpy(hex + prefixLen, extranonce_str, extranonce1Len);
+        memset(hex + extranonce2Offset, '0', extranonce2Len);
+        memcpy(hex + extranonce2Offset + extranonce2Len, current_job->coinbase_2, suffixLen + 1);
+
+        // Decode in place and keep the template until the pool changes it.
+        m_coinbase = reinterpret_cast<uint8_t *>(hex);
+        m_coinbaseLen = hexLen / 2;
+        m_extranonce2HexOffset = extranonce2Offset;
+        hex2bin(hex, m_coinbase, m_coinbaseLen);
+        return true;
+    }
+
+    void writeExtranonce2(const char *extranonce2)
+    {
+        const size_t offset = m_extranonce2HexOffset / 2;
+        auto *destination = m_coinbase + offset;
+        if (m_extranonce2HexOffset % 2 == 0) {
+            hex2bin(extranonce2, destination, extranonce_2_len);
+            return;
+        }
+
+        // Preserve the neighboring nibbles when the pool's hex prefix is odd-length.
+        uint8_t highNibble = destination[0] & 0xf0;
+        for (int i = 0; i < extranonce_2_len; ++i) {
+            destination[i] = highNibble | hex2val(extranonce2[2 * i]);
+            highNibble = hex2val(extranonce2[2 * i + 1]) << 4;
+        }
+        if (offset + extranonce_2_len < m_coinbaseLen) {
+            destination[extranonce_2_len] = highNibble | (destination[extranonce_2_len] & 0x0f);
+        }
+    }
+
   public:
     mining_notify *current_job = nullptr;
 
@@ -59,6 +113,7 @@ class MiningInfoV1 : public MiningInfoBase {
 
     ~MiningInfoV1() override
     {
+        safe_free(m_coinbase);
         safe_free(extranonce_str);
         safe_free(next_extranonce_str);
         if (current_job) {
@@ -83,22 +138,13 @@ class MiningInfoV1 : public MiningInfoBase {
         char extranonce_2_str[MAX_EXTRANONCE_2_LEN * 2 + 1]; // +1 zero termination
         snprintf(extranonce_2_str, extranonce_2_len * 2 + 1, "%0*lx", (int) extranonce_2_len * 2, (unsigned long) extranonce_2);
 
-        // generate coinbase tx
-        int coinbase_tx_len = strlen(current_job->coinbase_1) + strlen(extranonce_str) + strlen(extranonce_2_str) +
-                              strlen(current_job->coinbase_2);
-        char *coinbase_tx = (char *) MALLOC(coinbase_tx_len + 1);
-        if (!coinbase_tx) {
-            ESP_LOGE(TAG, "no memory for coinbase tx");
+        if (!m_coinbase && !prepareCoinbase()) {
             return nullptr;
         }
-        snprintf(coinbase_tx, coinbase_tx_len + 1, "%s%s%s%s", current_job->coinbase_1, extranonce_str,
-                 extranonce_2_str, current_job->coinbase_2);
-
-        // calculate merkle root
-        char merkle_root[65];
-        calculate_merkle_root_hash(coinbase_tx, current_job->_merkle_branches, current_job->n_merkle_branches,
-                                   merkle_root);
-        free(coinbase_tx);
+        writeExtranonce2(extranonce_2_str);
+        uint8_t merkle_root[32];
+        calculate_merkle_root_hash(m_coinbase, m_coinbaseLen, current_job->_merkle_branches,
+                                   current_job->n_merkle_branches, merkle_root);
 
         // we need malloc because we will save it in the job array
         bm_job *next_job = (bm_job *) MALLOC(sizeof(bm_job));
@@ -109,6 +155,10 @@ class MiningInfoV1 : public MiningInfoBase {
         construct_bm_job(current_job, merkle_root, version_mask, next_job);
         next_job->jobid = strdup(current_job->job_id);
         next_job->extranonce2 = strdup(extranonce_2_str);
+        if (!next_job->jobid || !next_job->extranonce2) {
+            free_bm_job(next_job);
+            return nullptr;
+        }
         next_job->pool_diff = active_stratum_difficulty;
         next_job->pool_id = pool_id;
         next_job->asic_diff = asic_diff;
@@ -153,6 +203,7 @@ class MiningInfoV1 : public MiningInfoBase {
     {
         // mark as invalid
         current_job->ntime = 0;
+        safe_free(m_coinbase);
         safe_free(extranonce_str);
         safe_free(next_extranonce_str);
         safe_free(current_job->job_id);
@@ -179,6 +230,7 @@ class MiningInfoV1 : public MiningInfoBase {
 
     void set_enonce(char *enonce, int enonce2_len)
     {
+        safe_free(m_coinbase);
         safe_free(extranonce_str);
 
         extranonce_str = strdup(enonce);
@@ -195,6 +247,7 @@ class MiningInfoV1 : public MiningInfoBase {
 
     void create_job_mining_notify(mining_notify *notify)
     {
+        safe_free(m_coinbase);
         // do we have a pending extranonce switch?
         if (next_extranonce_str) {
             safe_free(extranonce_str);
@@ -237,6 +290,7 @@ static void create_job_timer(TimerHandle_t xTimer)
 void trigger_job_creation()
 {
     pthread_mutex_lock(&job_mutex);
+    pool_job_pending = true;
     pthread_cond_signal(&job_cond);
     pthread_mutex_unlock(&job_mutex);
 }
@@ -337,14 +391,21 @@ void create_jobs_task(void *pvParameters)
             vTaskSuspend(NULL);
         }
         pthread_mutex_lock(&job_mutex);
-        pthread_cond_wait(&job_cond, &job_mutex); // Wait for the timer or external trigger
+        // Keep pool notifications that arrive while this task is processing a job.
+        if (!pool_job_pending) {
+            pthread_cond_wait(&job_cond, &job_mutex);
+        }
+        const bool pool_triggered = pool_job_pending;
+        pool_job_pending = false;
         pthread_mutex_unlock(&job_mutex);
 
         // job interval changed via UI
         if (board->getAsicJobIntervalMs() != lastJobInterval) {
             xTimerChangePeriod(job_timer, pdMS_TO_TICKS(board->getAsicJobIntervalMs()), 0);
             lastJobInterval = board->getAsicJobIntervalMs();
-            continue;
+            if (!pool_triggered) {
+                continue;
+            }
         }
 
         bm_job *next_job = nullptr;

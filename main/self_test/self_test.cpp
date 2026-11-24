@@ -91,7 +91,7 @@ void self_test(void *pvParameters)
     notify_message.ntime = 0x647025b5;
     notify_message.difficulty = 1000000;
 
-    const char *coinbase_tx = "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff4b0389130cfab"
+    const char coinbase_tx[] = "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff4b0389130cfab"
                               "e6d6d5cbab26a2599e92916edec"
                               "5657a94a0708ddb970f5c45b5d12905085617eff8e010000000000000031650707758de07b010000000000001cfd703"
                               "8212f736c7573682f0000000003"
@@ -117,8 +117,10 @@ void self_test(void *pvParameters)
     hex2bin("c4f5ab01913fc186d550c1a28f3f3e9ffaca2016b961a6a751f8cca0089df924", merkles[11], 32);
     hex2bin("cff737e1d00176dd6bbfa73071adbb370f227cfb5fba186562e4060fcec877e1", merkles[12], 32);
 
-    char merkle_root[65];
-    calculate_merkle_root_hash(coinbase_tx, merkles, num_merkles, merkle_root);
+    uint8_t coinbase_bin[(sizeof(coinbase_tx) - 1) / 2];
+    hex2bin(coinbase_tx, coinbase_bin, sizeof(coinbase_bin));
+    uint8_t merkle_root[32];
+    calculate_merkle_root_hash(coinbase_bin, sizeof(coinbase_bin), merkles, num_merkles, merkle_root);
 
     bm_job *job = (bm_job*) malloc(sizeof(bm_job));
     construct_bm_job(&notify_message, merkle_root, 0x1fffe000, job);

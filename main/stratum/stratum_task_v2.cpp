@@ -708,18 +708,15 @@ void StratumTaskV2::submitShare(const char *jobid, const char *extranonce_2,
     uint8_t buf[SV2_FRAME_HEADER_SIZE + 24 + 1 + 32]; // max size for extended submit
     int frame_len;
 
-    if (m_channelType == SV2_CHANNEL_EXTENDED && extranonce_2 && strlen(extranonce_2) > 0) {
+    if (m_channelType == SV2_CHANNEL_EXTENDED && extranonce_2 && *extranonce_2) {
         // Extended channel: decode hex extranonce2 to binary
-        size_t en2_hex_len = strlen(extranonce_2);
-        size_t en2_bin_len = en2_hex_len / 2;
+        const size_t en2_bin_len = strlen(extranonce_2) / 2;
         uint8_t en2_bin[32];
-
-        // Simple hex decode
-        for (size_t i = 0; i < en2_bin_len && i < sizeof(en2_bin); i++) {
-            unsigned int byte;
-            sscanf(extranonce_2 + i * 2, "%02x", &byte);
-            en2_bin[i] = (uint8_t)byte;
+        if (en2_bin_len > sizeof(en2_bin)) {
+            ESP_LOGE(m_tag, "Extranonce2 too long for SubmitShares frame");
+            return;
         }
+        hex2bin(extranonce_2, en2_bin, en2_bin_len);
 
         frame_len = sv2_build_submit_shares_extended(
             buf, sizeof(buf), m_sv2_conn.channel_id,

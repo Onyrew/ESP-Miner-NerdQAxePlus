@@ -81,7 +81,8 @@ class StratumApi {
     };
     char *m_buffer;
     char *m_requestBuffer;
-    size_t m_len;   // Current length of valid data in m_buffer.
+    size_t m_rxStart = 0; // First unread byte in m_buffer.
+    size_t m_rxEnd = 0;   // End of received data in m_buffer.
     int m_send_uid; // Message ID counter (each message gets a unique ID).
 
     // Helper: logs a transmit message (removing any trailing newline).
@@ -105,9 +106,8 @@ class StratumApi {
     ~StratumApi();
 
     // Receives a JSON-RPC line (terminated by '\n') from the socket.
-    // Returns a dynamically allocated C-string that the caller must free.
+    // Returns a mutable line in the receive buffer, valid until the next receive or reset.
     char* receiveJsonRpcLine(StratumTransport *transport);
-    void resetBuffer();
 
     // Sends a subscribe message.
     bool subscribe(StratumTransport *transport, const char *device, const char *asic);

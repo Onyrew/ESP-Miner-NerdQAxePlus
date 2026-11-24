@@ -84,7 +84,7 @@ void ASIC_result_task(void *pvParameters)
 
         uint8_t asic_job_id = asic_result.job_id;
 
-        bm_job *job = asicJobs.getClone(asic_job_id);
+        const auto job = asicJobs.getSnapshot(asic_job_id);
         if (!job) {
             //ESP_LOGI(TAG, "Invalid job id found, 0x%02X", asic_job_id);
             continue;
@@ -94,11 +94,7 @@ void ASIC_result_task(void *pvParameters)
         asic_result.rolled_version |= job->version;
 
         // check the nonce difficulty
-        double nonce_diff = test_nonce_value(job, asic_result.nonce, asic_result.rolled_version);
-
-        // get best known session diff
-        char bestDiffString[16];
-        suffixString(STRATUM_MANAGER->getBestSessionDiff(), bestDiffString, sizeof(bestDiffString), 3);
+        double nonce_diff = test_nonce_value(job.get(), asic_result.nonce, asic_result.rolled_version);
 
         const char *pool_str = job->pool_id ? "Sec" : "Pri";
 
@@ -106,6 +102,8 @@ void ASIC_result_task(void *pvParameters)
         // we only show responses >= maxAsicDifficulty to avoid spamming the log
         // change for dual pool because the pool with lower % can reduce asic HW difficulty
         if (nonce_diff >= board->getAsicMaxDifficulty() || nonce_diff >= job->pool_diff) {
+            char bestDiffString[16];
+            suffixString(STRATUM_MANAGER->getBestSessionDiff(), bestDiffString, sizeof(bestDiffString), 3);
             ESP_LOGI(TAG, "(%s) Job ID: %02X AsicNr: %d Ver: %08" PRIX32 " Nonce %08" PRIX32 "; Extranonce2 %s diff %.1f/%lu/%s",
                 pool_str, asic_job_id, asic_result.asic_nr, asic_result.rolled_version, asic_result.nonce, job->extranonce2,
                 nonce_diff, job->pool_diff, bestDiffString);
@@ -131,8 +129,5 @@ void ASIC_result_task(void *pvParameters)
         STRATUM_MANAGER->checkForBestDiff(job->pool_id, nonce_diff, job->target);
 
         STRATUM_MANAGER->checkForFoundBlock(job->pool_id, nonce_diff, job->target);
-
-
-        free_bm_job(job);
     }
 }

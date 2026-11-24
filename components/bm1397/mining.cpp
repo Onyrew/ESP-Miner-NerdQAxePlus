@@ -1,9 +1,7 @@
 #include "mining.h"
 #include "mbedtls/sha256.h"
 #include "mining_utils.h"
-#include "macros.h"
-#include <limits.h>
-#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 void free_bm_job(bm_job *job)
@@ -13,30 +11,18 @@ void free_bm_job(bm_job *job)
     free(job);
 }
 
-void calculate_merkle_root_hash(const char *coinbase_tx, const uint8_t merkle_branches[][32], const int num_merkle_branches, char merkle_root_hash[65])
+void calculate_merkle_root_hash(const uint8_t *coinbase_tx, size_t coinbase_tx_len, const uint8_t merkle_branches[][32], int num_merkle_branches, uint8_t merkle_root[32])
 {
-    size_t coinbase_tx_bin_len = strlen(coinbase_tx) / 2;
-    uint8_t *coinbase_tx_bin = (uint8_t *) MALLOC(coinbase_tx_bin_len);
-
-    hex2bin(coinbase_tx, coinbase_tx_bin, coinbase_tx_bin_len);
-
     uint8_t both_merkles[64];
-    uint8_t new_root[32];
-    double_sha256_bin(coinbase_tx_bin, coinbase_tx_bin_len, new_root);
-    free(coinbase_tx_bin);
-
-    memcpy(both_merkles, new_root, 32);
+    double_sha256_bin(coinbase_tx, coinbase_tx_len, merkle_root);
     for (int i = 0; i < num_merkle_branches; i++) {
+        memcpy(both_merkles, merkle_root, 32);
         memcpy(both_merkles + 32, merkle_branches[i], 32);
-        double_sha256_bin(both_merkles, 64, new_root);
-        memcpy(both_merkles, new_root, 32);
+        double_sha256_bin(both_merkles, sizeof(both_merkles), merkle_root);
     }
-
-    bin2hex(both_merkles, 32, merkle_root_hash, 65);
 }
 
-// take a mining_notify struct with ascii hex strings and convert it to a bm_job struct
-void construct_bm_job(mining_notify *params, const char *merkle_root, const uint32_t version_mask, bm_job *new_job)
+void construct_bm_job(mining_notify *params, const uint8_t merkle_root[32], uint32_t version_mask, bm_job *new_job)
 {
     new_job->version = params->version;
     new_job->version_mask = version_mask;
@@ -45,11 +31,11 @@ void construct_bm_job(mining_notify *params, const char *merkle_root, const uint
     new_job->ntime = params->ntime;
     new_job->pool_diff = params->difficulty;
 
-    hex2bin(merkle_root, new_job->merkle_root, 32);
-
-    // hex2bin(merkle_root, new_job.merkle_root_be, 32);
-    swap_endian_words(merkle_root, new_job->merkle_root_be);
-    reverse_bytes(new_job->merkle_root_be, 32);
+    memcpy(new_job->merkle_root, merkle_root, HASH_SIZE);
+    // The ASIC expects the words in reverse order with their bytes intact.
+    for (size_t i = 0; i < HASH_SIZE; i += 4) {
+        memcpy(new_job->merkle_root_be + i, merkle_root + HASH_SIZE - 4 - i, 4);
+    }
 
     swap_endian_words_bin(params->_prev_block_hash, new_job->prev_block_hash, HASH_SIZE);
     memcpy(new_job->prev_block_hash_be, params->_prev_block_hash, HASH_SIZE);

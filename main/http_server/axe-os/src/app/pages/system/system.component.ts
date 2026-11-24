@@ -10,6 +10,8 @@ import {
 import {
   bufferTime,
   catchError,
+  EMPTY,
+  exhaustMap,
   filter as rxFilter,
   interval,
   Observable,
@@ -20,6 +22,7 @@ import {
   Subscription,
   switchMap,
   tap,
+  timeout,
 } from 'rxjs';
 import { HttpErrorResponse } from '@angular/common/http';
 import { CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
@@ -146,7 +149,12 @@ export class SystemComponent implements OnDestroy, AfterViewInit {
 
     this.info$ = interval(5000).pipe(
       startWith(0),
-      switchMap(() => this.systemService.getSystemV2()),
+      exhaustMap(() =>
+        this.systemService.getSystemV2().pipe(
+          timeout({ first: 10000 }),
+          catchError(() => EMPTY)
+        )
+      ),
       shareReplay({ refCount: true, bufferSize: 1 })
     );
 
